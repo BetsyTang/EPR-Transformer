@@ -1,5 +1,5 @@
 from model import *
-from data_preprocessing import *
+from transcribed_scores.data_preprocessing import *
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from torch import optim

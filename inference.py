@@ -4,7 +4,7 @@ from config import *
 from torch import optim
 from transformers import BertConfig
 from torch.utils.data import DataLoader, Dataset
-from data_preprocessing import *
+from transcribed_scores.data_preprocessing import *
 from pretty_midi import PrettyMIDI
 
 import os

@@ -24,16 +24,16 @@ class MidiBert(nn.Module):
         self.hidden_size = bertConfig.hidden_size
         self.bertConfig = bertConfig
 
-        # token types: [Pitch, Velocity, Duration, Position, Bar]
-        self.n_tokens = [89, 66, 4609, 1537, 518]      # [3,18,88,66]
-        self.classes = ['Pitch', 'Velocity', 'Duration', 'Position', 'Bar']
-        self.emb_sizes = [32, 64, 512, 256, 128]
+        # # token types: [Pitch, Velocity, Duration, Position, Bar]
+        # self.n_tokens = [89, 66, 4609, 1537, 518]      # [3,18,88,66]
+        # self.classes = ['Pitch', 'Velocity', 'Duration', 'Position', 'Bar']
+        # self.emb_sizes = [32, 64, 512, 256, 128]
 
-        # word_emb: embeddings to change token ids into embeddings
-        self.word_emb = []
-        for i in range(len(self.classes)):
-            self.word_emb.append(Embeddings(self.n_tokens[i], self.emb_sizes[i]))
-        self.word_emb = nn.ModuleList(self.word_emb)
+        # # word_emb: embeddings to change token ids into embeddings
+        # self.word_emb = []
+        # for i in range(len(self.classes)):
+        #     self.word_emb.append(Embeddings(self.n_tokens[i], self.emb_sizes[i]))
+        # self.word_emb = nn.ModuleList(self.word_emb)
 
         # linear layer to merge embeddings from different token types 
         self.in_linear = nn.Linear(np.sum(self.emb_sizes), bertConfig.d_model)
@@ -111,23 +111,26 @@ class MLM(nn.Module):
     def forward(self, y, performer):
         # feed to bert 
         y = y.hidden_states[-1]
-
+        
+        
+        # Map performer identity (expression) to embedding 
         y_p = self.performer_emb(performer)
         y_p = y_p[:, None, :]
         y_p = torch.repeat_interleave(y_p, 1000, dim=1)
+        
         y = torch.cat([y, y_p], dim=-1)
                 
         ys = []
         for i in range(3):
             if i == 0:
-                y0 = self.proj[i](y)
+                y0 = self.proj[i](y) #vel
                 y0 = self.velact(y0)
                 ys.append(y0) # (batch_size, seq_len, dict_size)
-            elif i == 1:
+            elif i == 1:    #durdev
                 y1 = self.proj[i](y)
                 y1 = self.duract(y1)
                 ys.append(y1) # (batch_size, seq_len, dict_size)
-            elif i == 2:
+            elif i == 2: #ioi
                 y2 = self.proj[i](y)
                 y2 = self.posact(y2)
                 ys.append(y2) # (batch_size, seq_len, dict_size)
