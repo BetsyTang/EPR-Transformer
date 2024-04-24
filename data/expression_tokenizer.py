@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import os
+import sys
 
 TICKS_PER_BEAT = 384
 
@@ -28,19 +29,17 @@ class ExpressionTok(MIDITokenizer):
     * 3: Performance Inter Onset Interval (Onset time difference between the current note and the previous note); -> PIOI
     * 4: Perfromance Position; -> PPosition
     * 5: Perfromance Bar; -> PBar
-    * 6: Score Duration; -> SDuration
-    * 7: Score Inter Onset Interval; -> SIOI
-    * 8: Score Position; -> SPosition
-    * 9: Score Bar; -> SBar
-    * 10: Duration Deviation; -> SPDurationDev
+    * 6: Score Velocity; -> SVelocity
+    * 7: Score Duration; -> SDuration
+    * 8: Score Inter Onset Interval; -> SIOI
+    * 9: Score Position; -> SPosition
+    * 10: Score Bar; -> SBar
+    Deleted: * 11: Duration Deviation; -> SPDurationDev
 
     **Notes:**
     * Tokens are first sorted by time, then track, then pitch values.
     
     """
-    
-    # def __init__(self, tokenizer_config: TokenizerConfig = None, params: str | Path | None = None,):
-    #     super().__init__(tokenizer_config, params)
 
     def _tweak_config_before_creating_voc(self) -> None:
         self.config.use_chords = False
@@ -58,16 +57,17 @@ class ExpressionTok(MIDITokenizer):
         if "max_bar_embedding" not in self.config.additional_params:
             self.config.additional_params["max_bar_embedding"] = 3000
 
-        assert self.config.additional_params["data_type"] in ['Performance', 'Score', 'Alignment']
+        assert self.config.additional_params["data_type"] in ['Midi', 'Alignment']
         
-        if self.config.additional_params["data_type"] == "Performance":
-            token_types = ["Pitch", "PVelocity", "PDuration", "PIOI", "PPosition", "PBar"]
-        if self.config.additional_params["data_type"] == "Score":
-            token_types = ["Pitch", "SDuration", "SIOI", "SPosition", "SBar"]
+        # Initialize different datatype according to the input file type
+        if self.config.additional_params["data_type"] == "Midi":
+            token_types = ["Pitch", "Velocity", "Duration", "IOI", "Position", "Bar"]
+            
         if self.config.additional_params["data_type"] == "Alignment":
             token_types = ["Pitch", "PVelocity", "PDuration", "PIOI", "PPosition", "PBar", \
-                            "SDuration", "SIOI", "SPosition", "SBar", "SPDurationDev"]
-        
+                            "SVelocity", "SDuration", "SIOI", "SPosition", "SBar"]
+            # token_types = ["Pitch", "PVelocity", "PDuration", "PIOI", "PPosition", "PBar", \
+            #                 "SVelocity", "SDuration", "SIOI", "SPosition", "SBar", "SPDurationDev"]
         self.vocab_types_idx = {
             type_: idx for idx, type_ in enumerate(token_types)
         }  # used for data augmentation
@@ -142,23 +142,15 @@ class ExpressionTok(MIDITokenizer):
                 )
                 IOI = current_bar * pos_per_bar + current_pos - prev_bar * pos_per_bar - prev_pos if prev_bar != -1 else 0
                 
-                if self.config.additional_params["data_type"] == "Performance":
-                    new_event = [
-                        Event(type_=pitch_token_name, value=event.value, time=event.time),
-                        Event(type_="PVelocity", value=events[e + 1].value, time=event.time),
-                        Event(type_="PDuration", value=events[e + 2].value, time=event.time),
-                        Event(type_="PIOI", value=IOI, time=event.time ),
-                        Event(type_="PPosition", value=current_pos, time=event.time),
-                        Event(type_="PBar", value=current_bar, time=event.time),
-                    ]
-                else:
-                    new_event = [
-                        Event(type_=pitch_token_name, value=event.value, time=event.time),
-                        Event(type_="SDuration", value=events[e + 1].value, time=event.time),
-                        Event(type_="SIOI", value=IOI, time=event.time ),
-                        Event(type_="SPosition", value=current_pos, time=event.time),
-                        Event(type_="SBar", value=current_bar, time=event.time),
-                    ]
+                new_event = [
+                    Event(type_=pitch_token_name, value=event.value, time=event.time),
+                    Event(type_="Velocity", value=events[e + 1].value, time=event.time),
+                    Event(type_="Duration", value=events[e + 2].value, time=event.time),
+                    Event(type_="IOI", value=IOI, time=event.time ),
+                    Event(type_="Position", value=current_pos, time=event.time),
+                    Event(type_="Bar", value=current_bar, time=event.time),
+                ]
+               
                 if self.config.use_programs:
                     new_event.append(Event("Program", current_program))
                 if self.config.use_tempos:
@@ -201,6 +193,43 @@ class ExpressionTok(MIDITokenizer):
             self.config.additional_params["max_bar_embedding"] = num_bars
 
         return super()._midi_to_tokens(midi)
+    
+    def _time_quantize_by_group(self, notes):
+        '''
+        This is just a backup for quantisation methods writen in octuple performer, 
+        I dropped the quantize by grid since it doesn't make a lot of sense given 
+        low accuracy of tempo change predictions. This function will shift the notes 
+        that should be played togather to the same onset time.
+        '''
+        min_interval = TICKS_PER_BEAT / 60000 * 25
+        group = []
+        note_index = []
+        onset = 0
+        for i, note in enumerate(notes):
+            if note.pitch > self.pitch_range.stop:
+                continue
+            if group == []:
+                group.append(note.start)
+                note_index.append(i)
+                onset = note.start
+            elif note.start - onset < (min_interval * self.match_tempo(note)):
+                group.append(note.start)
+                note_index.append(i)
+                onset = note.start
+            elif note.start - onset >= (min_interval * self.match_tempo(note)):
+                try:
+                    mean_onset = int(np.round(np.mean(group)))
+                except ValueError:
+                    print(group)
+                for j in note_index:
+                    offset = mean_onset - notes[j].start
+                    notes[j].start = mean_onset
+                    notes[j].end += offset
+                group = [note.start]
+                note_index = [i]
+                onset = note.start
+        return notes
+    
     
     def _create_track_events(
         self, track: Track, ticks_per_beat: np.ndarray = None
@@ -385,19 +414,16 @@ class ExpressionTok(MIDITokenizer):
                     )
                 )
             
-            ###### ADD BY JINGJING ##########
-            if self.config.additional_params["data_type"] == "Performance":
-                # Velocity
-                events.append(
-                    Event(
-                        type_="PVelocity",
-                        value=note.velocity,
-                        time=note.start,
-                        program=program,
-                        desc=f"{note.velocity}",
-                    )
+            events.append(
+                Event(
+                    type_="Velocity",
+                    value=note.velocity,
+                    time=note.start,
+                    program=program,
+                    desc=f"{note.velocity}",
                 )
-
+            )
+            
             # Duration / NoteOff
             if self._note_on_off:
                 if self.config.use_programs and not self.config.program_changes:
@@ -428,53 +454,39 @@ class ExpressionTok(MIDITokenizer):
                 dur = self._tpb_ticks_to_tokens[ticks_per_beat[tpb_idx, 1]][
                     note.duration
                 ]
-                if self.config.additional_params["data_type"] == "Performance":
-                    events.append(
-                        Event(
-                            type_="PDuration",
-                            value=dur,
-                            time=note.start,
-                            program=program,
-                            desc=f"{note.duration} ticks",
-                        )
+                events.append(
+                    Event(
+                        type_="Duration",
+                        value=dur,
+                        time=note.start,
+                        program=program,
+                        desc=f"{note.duration} ticks",
                     )
-                else:
-                    events.append(
-                        Event(
-                            type_="SDuration",
-                            value=dur,
-                            time=note.start,
-                            program=program,
-                            desc=f"{note.duration} ticks",
-                        )
-                    )
-
+                )
+                
         return events    
     
-    def alignment_to_token(self, alignment_file: str, midi: Score) -> TokSequence | list[TokSequence]:      
-        headers = ['alignID', 'alignOntime', 'alignOfftime', 'alignSitch', 'alignPitch', 'alignOnvel', 
-                        'refID', 'refOntime', 'refOfftime', 'refSitch', 'refPitch', 'refOnvel']
-        align_file = pd.read_csv(alignment_file, sep='\s+', names=headers, skiprows=[0])
-        
-        align_file['label'] = None
-        align_file.loc[align_file['refID']== "*", 'label'] = "insertion"
-        align_file.loc[align_file['alignID']== "*", 'label'] = "deletion"
-        align_file.loc[(align_file['refID']!= "*")&(align_file['alignID']!= "*"), 'label'] = 'match'
-        
-        align_file = align_file[align_file['label'] == "match"].astype({'refID':'int32'})
-        outliers = self._detect_outliers(align_file)
-        align_file = align_file[~align_file['refID'].isin(outliers)]
-        
+    def alignment_to_token(self, align_file: str, midi: Score) -> TokSequence | list[TokSequence]:   
+        """Similar to midi_to_token function, but mainly designed for process the nakamura alignments 'infer_corresp' files
+
+        Args:
+            align_file (str): path to the alignments
+            midi (Score): loaded midi object
+
+        Returns:
+            TokSequence | list[TokSequence]: token sequence represented as a TokSeqeuce object 
+        """
+        alignment = ExpressionTok.load_alignments(align_file, self.config.additional_params['remove_outliers'])  
+
         all_events = []
         # Global events (Tempo, TimeSignature)
         global_events = [Event(type_="TimeSig", value="4/4", time=0),
                          Event(type_="Tempo", value=TEMPO, time=0)]
         
         all_events += global_events       
-        ticks_per_beat = TICKS_PER_BEAT
 
         # Adds track tokens
-        all_events += self._create_align_events(align_file, midi)
+        all_events += self._create_align_events(alignment, midi)
         self._sort_events(all_events)
         # Add time events
         all_events = self._add_align_time_events(all_events, midi.ticks_per_quarter)
@@ -484,91 +496,61 @@ class ExpressionTok(MIDITokenizer):
         return tok_sequence
     
     def _create_align_events(self, alignment:pd.DataFrame, midi: Score) -> list[Event]:
+        """
+        Generate alignment events from a DataFrame and a MIDI Score object.
+
+        Args:
+            alignment (pd.DataFrame): Data containing timing and pitch information.
+            midi (Score): MIDI score object.
+
+        Returns:
+            list[Event]: List of musical events.
+        """
         events = []
-        previous_Ponset = 0
-        previous_Sonset = 0
         ticks_per_beat = get_midi_ticks_per_beat(midi)
-        alignment.loc[:, 'alignOnvel'] = self.np_get_closest(self.velocities, alignment['alignOnvel'].to_numpy())
+        self.ticks_per_quarter = midi.ticks_per_quarter
         
-        for idx, row in alignment.iterrows():
-            row['refOfftime'] = row['refOfftime'] + 0.5 if row['refOfftime'] == row['refOntime'] else row['refOfftime']
-            
-            Ponset = self._seconds_to_ticks(row['alignOntime'], ticks_per_beat[0, 1])
-            Poffset = self._seconds_to_ticks(row['alignOfftime'], ticks_per_beat[0, 1])
-            Sonset = self._seconds_to_ticks(row['refOntime'], ticks_per_beat[0, 1])
-            Soffset = self._seconds_to_ticks(row['refOfftime'], ticks_per_beat[0, 1])
-            
-            
-            # Pitch
-            events.append(
-                Event(
-                    type_="Pitch",
-                    value=row['alignPitch'],
-                    time=Ponset,
-                    desc=Poffset
-                )
-            )
+        # Prepare alignment data: Adjusting 'off' times and velocity values
+        alignment['refOfftime'] += 0.5 * (alignment['refOfftime'] == alignment['refOntime'])
+        alignment['alignOfftime'] += 0.5 * (alignment['alignOfftime'] == alignment['alignOntime'])
+        alignment['alignOnvel'] = self.np_get_closest(self.velocities, alignment['alignOnvel'].to_numpy())
 
-            #ScoreOnset
-            events.append(
-                Event(
-                    type_="SOnset",
-                    value=Sonset,
-                    time=Ponset,
-                    desc=Poffset
-                )
-            )
+        # Calculate ticks from seconds for all necessary time columns
+        time_columns = ['alignOntime', 'alignOfftime', 'refOntime', 'refOfftime']
+        ticks_matrix = np.array([self.seconds_to_ticks(alignment[col].to_numpy(), ticks_per_beat[0, 1]) for col in time_columns]).T
+        max_duration_ticks = max(self._tpb_ticks_to_tokens[ticks_per_beat[0, 1]].keys())
 
+        # Generate events using the calculated tick data
+        n = 0 
+        for i, row in alignment.iterrows():
+            Ponset, Poffset, Sonset, Soffset = ticks_matrix[n, 0], ticks_matrix[n, 1], ticks_matrix[n, 2], ticks_matrix[n, 3]
+            Pduration_ticks = min(Poffset - Ponset, max_duration_ticks)
+            Sduration_ticks = min(Soffset - Sonset, max_duration_ticks)
+            n += 1
+            # Map durations to tokens
+            Pduration_token = self._tpb_ticks_to_tokens[ticks_per_beat[0, 1]][Pduration_ticks]
+            Sduration_token = self._tpb_ticks_to_tokens[ticks_per_beat[0, 1]][Sduration_ticks]
             
-            # PVelocity
-            events.append(
-                Event(
-                    type_="PVelocity",
-                    value=row['alignOnvel'],
-                    time=Ponset,
-                    desc=f"{row['alignOnvel']}"
-                )
-            )
+            #SVel
+            Svel = self.np_get_closest(self.velocities, [60])[0]
             
-            # PDuration
-            Pdur = Poffset - Ponset
-            Pdur = self._tpb_ticks_to_tokens[ticks_per_beat[0, 1]][
-                    Pdur
-                ]
-            events.append(
-                    Event(
-                        type_="PDuration",
-                        value=Pdur,
-                        time=Ponset,
-                        desc=f"{Pdur} ticks",
-                    )
-                )
+            # Create events
+            events.extend([
+                Event(type_="Pitch", value=row['alignPitch'], time=Ponset, desc=Poffset),
+                Event(type_="SOnset", value=Sonset, time=Ponset, desc=Poffset),
+                Event(type_="PVelocity", value=row['alignOnvel'], time=Ponset, desc=str(row['alignOnvel'])),
+                Event(type_="PDuration", value=Pduration_token, time=Ponset, desc=f"{Pduration_token} ticks"),
+                Event(type_="SVelocity", value=Svel, time=Ponset, desc=str(Svel)),
+                Event(type_="SDuration", value=Sduration_token, time=Ponset, desc=f"{Sduration_token} ticks"),
+            ])
 
-            # SDuration
-            Sdur = Soffset - Sonset
-            Sdur = self._tpb_ticks_to_tokens[ticks_per_beat[0, 1]][
-                    Sdur
-                ] 
-            events.append(
-                    Event(
-                        type_="SDuration",
-                        value=Sdur,
-                        time=Ponset,
-                        desc=f"{Sdur} ticks",
-                    )
-                )
-            
         return events
-    
+  
     def _add_align_time_events(self, events: list[Event], time_division: int
     ) -> list[list[Event]]:
         r"""
         Create the time events from a list of performance and score events.
-
-        Internal method intended to be implemented by child classes.
-        The returned sequence is the final token sequence ready to be converted to ids
-        to be fed to a model.
-
+        
         :param events: sequence of global and track events to create tokens time from.
         :param time_division: time division in ticks per quarter of the MIDI being
             tokenized.
@@ -646,14 +628,22 @@ class ExpressionTok(MIDITokenizer):
                 # "SDuration", "SIOI", "SPosition", "SBar", "SPDurationDev"
                 PIOI = Pcurrent_bar * pos_per_bar + Pcurrent_pos - Pprev_bar * pos_per_bar - Pprev_pos if Pprev_bar != -1 else 0
                 SIOI = Scurrent_bar * pos_per_bar + Scurrent_pos - Sprev_bar * pos_per_bar - Sprev_pos if Sprev_bar != -1 else 0
-                Pdur = int(events[e + 3].value.split(".")[0]) * int(events[e + 3].value.split(".")[2]) + int(events[e + 3].value.split(".")[1])
-                Sdur = int(events[e + 4].value.split(".")[0]) * int(events[e + 4].value.split(".")[2]) + int(events[e + 4].value.split(".")[1])
-                SPDurDev = Pdur - Sdur
+                # Pdur = int(events[e + 3].value.split(".")[0]) * int(events[e + 3].value.split(".")[2]) + int(events[e + 3].value.split(".")[1])
+                # Sdur = int(events[e + 5].value.split(".")[0]) * int(events[e + 5].value.split(".")[2]) + int(events[e + 5].value.split(".")[1])
+                # SPDurDev = Pdur - Sdur
                 
+                #NOTE Hard code to deal with such kind of issues
+                if np.abs(PIOI) >= self.num_positions:
+                    PIOI = self.num_positions - 1 if PIOI > 0 else -self.num_positions + 1
+                    
+                if np.abs(SIOI) >= self.num_positions:
+                    SIOI = self.num_positions - 1 if SIOI > 0 else -self.num_positions + 1
+                    
+                # if np.abs(SPDurDev) >= 2 * self.num_positions:
+                #     SPDurDev = 2 * self.num_positions - 1 if SPDurDev > 0 else -2 * self.num_positions + 1
+                    
                 if Pprev_bar == -1:
-                    print(PIOI)
-                    assert PIOI == 0
-                
+                    assert PIOI == 0              
                 
                 if Sprev_bar == -1:
                     assert SIOI == 0
@@ -665,11 +655,12 @@ class ExpressionTok(MIDITokenizer):
                     Event(type_="PIOI", value=PIOI, time=event.time),
                     Event(type_="PPosition", value=Pcurrent_pos, time=event.time),
                     Event(type_="PBar", value=Pcurrent_bar, time=event.time),
-                    Event(type_="SDuration", value=events[e + 4].value, time=event.time),
+                    Event(type_="SVelocity", value=events[e + 4].value, time=event.time),
+                    Event(type_="SDuration", value=events[e + 5].value, time=event.time),
                     Event(type_="SIOI", value=SIOI, time=event.time),
                     Event(type_="SPosition", value=Scurrent_pos, time=event.time),
                     Event(type_="SBar", value=Scurrent_bar, time=event.time),
-                    Event(type_="SPDurationDev", value=SPDurDev, time=event.time),
+                    # Event(type_="SPDurationDev", value=SPDurDev, time=event.time),
                 ]
                 
                 all_events.append(new_event)
@@ -684,6 +675,7 @@ class ExpressionTok(MIDITokenizer):
         self,
         tokens: TokSequence | list[TokSequence],
         programs: list[tuple[int, bool]] | None = None,
+        ticks_per_quarter: int = 0
     ) -> list[Score]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a MIDI.
@@ -699,6 +691,9 @@ class ExpressionTok(MIDITokenizer):
         """
         # Unsqueeze tokens in case of one_token_stream
         tokens = [tokens]
+        for i in range(len(tokens)):
+            tokens[i] = tokens[i].tokens
+            
         Pmidi = Score(self.time_division)
         Smidi = Score(self.time_division)
 
@@ -726,14 +721,14 @@ class ExpressionTok(MIDITokenizer):
             time_signature_changes.append(TimeSignature(0, *TIME_SIGNATURE))
             current_time_sig = time_signature_changes[0]
             ticks_per_bar = compute_ticks_per_bar(
-                current_time_sig, self.ticks_per_quarter
+                current_time_sig, ticks_per_quarter
             )
             ticks_per_beat = self._tpb_per_ts[current_time_sig.denominator]
             ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
                 
             # Decode tokens
             for time_step in seq:
-                num_tok_to_check = 11
+                num_tok_to_check = 12
                 if any(
                     tok.split("_")[1] == "None" for tok in time_step[:num_tok_to_check]
                 ):
@@ -753,8 +748,9 @@ class ExpressionTok(MIDITokenizer):
                     + Pevent_pos * ticks_per_pos
                 )
 
-                Sevent_pos = int(time_step[8].split("_")[1])
-                Sevent_bar = int(time_step[9].split("_")[1])
+                Svel = int(time_step[6].split("_")[1])
+                Sevent_pos = int(time_step[9].split("_")[1])
+                Sevent_bar = int(time_step[10].split("_")[1])
                 Scurrent_tick = (
                     tick_at_last_ts_change
                     + (Sevent_bar - bar_at_last_ts_change) * ticks_per_bar
@@ -768,7 +764,7 @@ class ExpressionTok(MIDITokenizer):
                 ]
                 
                 Sduration = self._tpb_tokens_to_ticks[ticks_per_beat][
-                    time_step[6].split("_")[1]
+                    time_step[7].split("_")[1]
                 ]
 
                 # Append the created note
@@ -791,7 +787,183 @@ class ExpressionTok(MIDITokenizer):
         Smidi.time_signatures = time_signature_changes
 
         return [Pmidi, Smidi]
+    
+    def _align_tokens_to_midi_from_prediction(
+        self,
+        tokens: TokSequence | list[TokSequence],
+        programs: list[tuple[int, bool]] | None = None,
+        ticks_per_quarter: int = 0
+    ) -> list[Score]:
+        r"""
+        Convert tokens (:class:`miditok.TokSequence`) into a MIDI.
+
+        This is an internal method called by ``self.tokens_to_midi``, intended to be
+        implemented by classes inheriting :class:`miditok.MidiTokenizer`.
+
+        :param tokens: tokens to convert. Can be either a list of
+            :class:`miditok.TokSequence` or a list of :class:`miditok.TokSequence`s.
+        :param programs: programs of the tracks. If none is given, will default to
+            piano, program 0. (default: ``None``)
+        :return: the midi object (:class:`symusic.Score`).
+        """
+        # Unsqueeze tokens in case of one_token_stream
+        for i in range(len(tokens)):
+            tokens[i] = tokens[i].tokens
             
+        Pmidi = Score(self.time_division)
+        Smidi = Score(self.time_division)
+
+        # RESULTS
+        Ptracks: dict[int, Track] = {}
+        Stracks: dict[int, Track] = {}
+        
+        tempo_changes, time_signature_changes = [Tempo(-1, self.default_tempo)], []
+        tempo_changes[0].tempo = -1
+
+        def check_inst(prog: int, tracks: dict[int, Track]) -> None:
+            if prog not in tracks:
+                tracks[prog] = Track(
+                    program=0 if prog == -1 else prog,
+                    is_drum=prog == -1,
+                    name="Drums" if prog == -1 else MIDI_INSTRUMENTS[prog]["name"],
+                )
+
+        bar_at_last_ts_change = 0
+        tick_at_last_ts_change = 0
+        current_program = 0 #Piano
+
+        pos_per_bar = max(self.config.beat_res.values())
+        
+        for si, seq in enumerate(tokens):
+            # First look for the first time signature if needed
+            time_signature_changes.append(TimeSignature(0, *TIME_SIGNATURE))
+            current_time_sig = time_signature_changes[0]
+            ticks_per_bar = compute_ticks_per_bar(
+                current_time_sig, ticks_per_quarter
+            )
+            ticks_per_beat = self._tpb_per_ts[current_time_sig.denominator]
+            ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+
+            t = 0
+            # Decode tokens
+            for time_step in seq:
+                num_tok_to_check = 12
+                if any(
+                    tok.split("_")[1] == "None" for tok in time_step[:num_tok_to_check]
+                ):
+                    # Padding or mask: error of prediction or end of sequence anyway
+                    continue
+
+                # Note attributes
+                pitch = int(time_step[0].split("_")[1])
+                Pvel = int(time_step[1].split("_")[1])
+
+                # Time values
+                if t == 0:
+                    Pevent_pos = int(time_step[9].split("_")[1])
+                    Pevent_bar = int(time_step[10].split("_")[1])
+                    Ppos = Pevent_bar * pos_per_bar + Pevent_pos
+                else:
+                    Ppos += int(time_step[3].split("_")[1])
+                    Pevent_bar = Ppos // pos_per_bar
+                    Pevent_pos = Ppos % pos_per_bar
+                    
+                Pcurrent_tick = (
+                    tick_at_last_ts_change
+                    + (Pevent_bar - bar_at_last_ts_change) * ticks_per_bar
+                    + Pevent_pos * ticks_per_pos
+                )
+
+                Svel = int(time_step[6].split("_")[1])
+                Sevent_pos = int(time_step[9].split("_")[1])
+                Sevent_bar = int(time_step[10].split("_")[1])
+                Scurrent_tick = (
+                    tick_at_last_ts_change
+                    + (Sevent_bar - bar_at_last_ts_change) * ticks_per_bar
+                    + Sevent_pos * ticks_per_pos
+                )
+
+
+                # Note duration
+                # predict_dur = self._add_durdev_to_dur(time_step[7], time_step[11])
+                Pduration = self._tpb_tokens_to_ticks[ticks_per_beat][
+                    time_step[2].split("_")[1]
+                ]
+                
+                Sduration = self._tpb_tokens_to_ticks[ticks_per_beat][
+                    time_step[7].split("_")[1]
+                ]
+
+                # Append the created note
+                new_Pnote = Note(Pcurrent_tick, Pduration, pitch, Pvel)
+                # Set the velocity for scores to be constant 60
+                new_Snote = Note(Scurrent_tick, Sduration, pitch, Svel) 
+              
+                check_inst(current_program, Ptracks)
+                check_inst(current_program, Stracks)
+                Ptracks[current_program].notes.append(new_Pnote)
+                Stracks[current_program].notes.append(new_Snote)
+                t += 1
+
+        # create MidiFile
+        Pmidi.tracks = list(Ptracks.values())
+        Pmidi.tempos = tempo_changes
+        Pmidi.time_signatures = time_signature_changes
+        
+        Smidi.tracks = list(Stracks.values())
+        Smidi.tempos = tempo_changes
+        Smidi.time_signatures = time_signature_changes
+
+        return [Pmidi, Smidi]
+    
+    def align_tokens_to_midi(self, 
+                             tokens: TokSequence | list[TokSequence], 
+                             ppath: str = "p.mid", 
+                             spath: str = "s.mid",
+                             predictions: bool = False,
+                             ticks_per_quater: int = 384):
+        """Similar to the tokens_to_midi() function, to create both the performance midi and the score midi 
+        given the alignment token list  
+
+        Args:
+            tokens (TokSequence | list[TokSequence]): _description_
+            ppath (str, optional): _description_. Defaults to "p.mid".
+            spath (str, optional): _description_. Defaults to "s.mid".
+
+        Returns:
+            _type_: _description_
+        """
+        if not isinstance(tokens, (TokSequence, list)) or (
+            isinstance(tokens, list)
+            and any(not isinstance(seq, TokSequence) for seq in tokens)
+        ):
+            tokens = self._convert_sequence_to_tokseq(tokens)
+
+        # Preprocess TokSequence(s)
+        if isinstance(tokens, TokSequence):
+            self._preprocess_tokseq_before_decoding(tokens)
+        else:  # list[TokSequence]
+            for seq in tokens:
+                self._preprocess_tokseq_before_decoding(seq)
+        
+        if predictions:
+            Pmidi, Smidi = self._align_tokens_to_midi_from_prediction(tokens, ticks_per_quarter=ticks_per_quater)
+        else:
+            Pmidi, Smidi = self._align_tokens_to_midi(tokens, ticks_per_quarter=ticks_per_quater)
+        
+        for midi in [Pmidi, Smidi]:
+            if len(midi.tempos) == 0 or midi.tempos[0].time != 0:
+                midi.tempos.insert(0, Tempo(0, self.default_tempo))
+            if len(midi.time_signatures) == 0 or midi.time_signatures[0].time != 0:
+                midi.time_signatures.insert(0, TimeSignature(0, *TIME_SIGNATURE))
+
+        # Write MIDI file
+        
+        Pmidi.dump_midi(ppath)
+        Smidi.dump_midi(spath)
+        
+        return Pmidi, Smidi
+           
     def _tokens_to_midi(
         self,
         tokens: TokSequence | list[TokSequence],
@@ -877,20 +1049,13 @@ class ExpressionTok(MIDITokenizer):
 
                 # Note attributes
                 pitch = int(time_step[0].split("_")[1])
-                if self.config.additional_params["data_type"] == "Performance":
-                    vel = int(time_step[1].split("_")[1])
-                else:
-                    vel = 60
+                vel = int(time_step[1].split("_")[1])
+              
                 # if self.config.use_programs:
                 #     current_program = int(time_step[5].split("_")[1])
-
-                if self.config.additional_params["data_type"] == "Performance":
-                    # Time values
-                    event_pos = int(time_step[4].split("_")[1])
-                    event_bar = int(time_step[5].split("_")[1])
-                else:
-                    event_pos = int(time_step[3].split("_")[1])
-                    event_bar = int(time_step[4].split("_")[1])
+                
+                event_pos = int(time_step[4].split("_")[1])
+                event_bar = int(time_step[5].split("_")[1])
                 
                 current_tick = (
                     tick_at_last_ts_change
@@ -930,15 +1095,10 @@ class ExpressionTok(MIDITokenizer):
                         )
 
                 # Note duration
-                if self.config.additional_params["data_type"] == "Performance":
-                    duration = self._tpb_tokens_to_ticks[ticks_per_beat][
-                        time_step[2].split("_")[1]
-                    ]
-                else:
-                    duration = self._tpb_tokens_to_ticks[ticks_per_beat][
-                        time_step[1].split("_")[1]
-                    ]
-
+                duration = self._tpb_tokens_to_ticks[ticks_per_beat][
+                    time_step[2].split("_")[1]
+                ]
+                
                 # Append the created note
                 new_note = Note(current_tick, duration, pitch, vel)
                 if self.one_token_stream:
@@ -995,21 +1155,20 @@ class ExpressionTok(MIDITokenizer):
 
         :return: the vocabulary as a list of string.
         """
-        if self.config.additional_params["data_type"] == "Performance":
-            N = 6
-        elif self.config.additional_params["data_type"] == "Score":
-            N = 5
+        if self.config.additional_params["data_type"] == "Alignment":
+            N = 12
         else:
-            N = 11 
+            N = 6
             
         max_num_beats = max(ts[0] for ts in self.time_signatures)
         num_positions = self.config.max_num_pos_per_beat * max_num_beats
+        self.num_positions = num_positions
         
         vocab = [[] for _ in range(N)]
         
         # PITCH
         vocab[0] += [f"Pitch_{i}" for i in range(*self.config.pitch_range)]
-        if self.config.additional_params["data_type"] in {"Performance", "Alignment"}:
+        if self.config.additional_params["data_type"] == "Alignment":
             # PVELOCITY
             vocab[1] += [f"PVelocity_{i}" for i in self.velocities]
 
@@ -1029,30 +1188,50 @@ class ExpressionTok(MIDITokenizer):
                 for i in range(self.config.additional_params["max_bar_embedding"])
             ]
             
-        if self.config.additional_params["data_type"] in {"Score", "Alignment"}:
-            n = 5 if self.config.additional_params["data_type"] == "Alignment" else 0
+            # SVELOCITY
+            vocab[6] += [f"SVelocity_{i}" for i in self.velocities]
+            
             # SDURATION
-            vocab[n + 1] += [
+            vocab[7] += [
                 f'SDuration_{".".join(map(str, duration))}' for duration in self.durations
             ]
 
             # SPOSITION & SIOI
             # self.time_division is equal to the maximum possible ticks/beat value.
-            vocab[n + 2] += [f"SIOI_{i}" for i in range(-num_positions, num_positions)]
+            vocab[8] += [f"SIOI_{i}" for i in range(-num_positions, num_positions)]
             
-            vocab[n + 3] += [f"SPosition_{i}" for i in range(num_positions)]
+            vocab[9] += [f"SPosition_{i}" for i in range(num_positions)]
 
             # SBAR (positional encoding)
-            vocab[n + 4] += [
+            vocab[10] += [
                 f"SBar_{i}"
                 for i in range(self.config.additional_params["max_bar_embedding"])
             ]
             
-        if self.config.additional_params["data_type"] == "Alignment":
-            # SDURATION
-            vocab[10] += [
-                f'SPDurationDev_{i}' for i in range(-2*num_positions, 2*num_positions)
+            # # SDURATION
+            # vocab[11] += [
+            #     f'SPDurationDev_{i}' for i in range(-2*num_positions, 2*num_positions)
+            # ]
+        else:
+            # VELOCITY
+            vocab[1] += [f"Velocity_{i}" for i in self.velocities]
+
+            # DURATION
+            vocab[2] += [
+                f'Duration_{".".join(map(str, duration))}' for duration in self.durations
             ]
+
+            # POSITION & IOI
+            # self.time_division is equal to the maximum possible ticks/beat value.
+            vocab[3] += [f"IOI_{i}" for i in range(-num_positions, num_positions)]
+            vocab[4] += [f"Position_{i}" for i in range(num_positions)]
+
+            # BAR (positional encoding)
+            vocab[5] += [
+                f"Bar_{i}"
+                for i in range(self.config.additional_params["max_bar_embedding"])
+            ]
+            
         return vocab
 
     def _create_token_types_graph(self) -> dict[str, set[str]]:
@@ -1127,17 +1306,40 @@ class ExpressionTok(MIDITokenizer):
 
         return err
     
-    def _seconds_to_ticks(self, seconds, ticks_per_beat=TICKS_PER_BEAT, tempo=TEMPO):
+    # def _add_durdev_to_dur(self, dur_event, durdev_event):
+    #     r"""
+    #     Only useful when the data is alignments of performances and scores
+    #     * 2: Performance Duration; -> PDuration
+    #     * 7: Score Duration; -> SDuration
+    #     * 11: Duration Deviation; -> SPDurationDev
+    #     """
+    #     dur_value = dur_event.split("_")[1]
+    #     print(dur_event, durdev_event)
+    #     dur_pos = int(dur_value.split(".")[0]) * int(dur_value.split(".")[2]) + int(dur_value.split(".")[1])
+    #     durdev_pos = int(durdev_event.split("_")[1])
+        
+    #     print(dur_pos, durdev_pos)
+        
+    #     dur_new_pos = dur_pos + durdev_pos
+    #     if dur_new_pos <= 0:
+    #         dur_new_pos = dur_pos
+    #     dur_new_value = f"{dur_new_pos // int(dur_event.split('.')[2])}.{dur_new_pos % int(dur_event.split('.')[2])}.{dur_event.split('.')[2]}"
+    #     dur_new_event = f"PDuration_{dur_new_value}"
+    #     return dur_new_event
+        
+    @staticmethod
+    def seconds_to_ticks(seconds, ticks_per_beat=TICKS_PER_BEAT, tempo=TEMPO):
         """
-        Converts time in seconds to MIDI ticks.
+        Converts time in seconds to MIDI ticks. This version supports both single float values
+        and numpy arrays as input.
         
         Args:
-        seconds (float): Time in seconds.
+        seconds (float or np.ndarray): Time in seconds or an array of times in seconds.
         tempo (int): Tempo in beats per minute (BPM).
         ticks_per_beat (int): Resolution of the MIDI file, in ticks per beat.
         
         Returns:
-        int: Number of ticks corresponding to the number of seconds.
+        int or np.ndarray: Number of ticks corresponding to the number of seconds.
         """
         # Calculate the duration of a single beat in seconds
         seconds_per_beat = 60.0 / tempo
@@ -1146,28 +1348,63 @@ class ExpressionTok(MIDITokenizer):
         beats = seconds / seconds_per_beat
         
         # Convert beats to ticks
-        ticks = int(beats * ticks_per_beat)
+        ticks = np.floor(beats * ticks_per_beat).astype(int)
         
         return ticks
-    
-    def _detect_outliers(self, align_file):
+
+    @staticmethod
+    def detect_outliers(df):
         """Detect disordered score notes (time not in ascending order)
 
         Args:
-            align_file (pd.Dataframe): _description_
+            df (pd.DataFrame): DataFrame with columns 'refID' and 'refOntime'
 
         Returns:
-            List: list of the index for outliers
+            pd.Index: Index of outliers
         """
-        outliers = []
-        sequence = align_file['refID'].tolist()
-        onset = align_file['refOntime'].tolist()
-        for i in range(1, len(sequence)-2):
-            if ((np.abs(sequence[i] - sequence[i-1]) > 10) or (np.abs(sequence[i] - sequence[i+1]) > 10)) and \
-                ((np.abs(onset[i] - onset[i-1]) > 1) or (np.abs(onset[i] - onset[i+1]) > 1)):
-                if np.abs(sequence[i+2] + sequence[i+1] - 2*sequence[i]) > 20:
-                    outliers.append(sequence[i])
+        # Calculate differences and conditions without for-loops
+        diff_refID_prev = df['refID'].diff(-1).abs() > 10
+        diff_refID_next = df['refID'].diff(1).abs() > 10
+        diff_refOntime_prev = df['refOntime'].diff(-1).abs() > 1
+        diff_refOntime_next = df['refOntime'].diff(1).abs() > 1
+        condition1 = (diff_refID_prev | diff_refID_next) & (diff_refOntime_prev | diff_refOntime_next)
+
+        # Check the second condition
+        second_condition = np.abs(df['refID'].shift(-2) + df['refID'].shift(1) - 2 * df['refID']) > 20
+
+        # Combine conditions and filter indices
+        outliers = df.index[condition1 & second_condition.shift(1)]
         return outliers
+    
+    @staticmethod
+    def load_alignments(alignment_file: str, remove_outliers: bool = True):
+        """Loads and processes alignment data from a text file.
+
+        Args:
+            alignment_file (str): Path to the text file containing alignments.
+            remove_outliers (bool): Whether to remove outliers.
+
+        Returns:
+            pd.DataFrame: Processed DataFrame with or without outliers.
+        """
+        headers = ['alignID', 'alignOntime', 'alignOfftime', 'alignSitch', 'alignPitch', 'alignOnvel', 
+                   'refID', 'refOntime', 'refOfftime', 'refSitch', 'refPitch', 'refOnvel']
+        # Load data
+        align_df = pd.read_csv(alignment_file, sep='\s+', names=headers, skiprows=1)
+        # Label data
+        align_df['label'] = 'match'
+        align_df.loc[align_df['refID'] == "*", 'label'] = "insertion"
+        align_df.loc[align_df['alignID'] == "*", 'label'] = "deletion"
+        match_df = align_df[align_df['label'] == 'match']
+
+        # Convert types
+        match_df.loc[:, 'refID'] = match_df['refID'].astype(int)
+
+        if remove_outliers:
+            # Detect and filter outliers
+            outliers = ExpressionTok.detect_outliers(match_df)
+            match_df = match_df.drop(index=outliers)
+        return match_df
     
     @staticmethod
     def np_get_closest(array: np.ndarray, values: np.ndarray) -> np.ndarray:
@@ -1194,8 +1431,10 @@ class ExpressionTok(MIDITokenizer):
 
 if __name__ == "__main__":
     
+    datatype = sys.argv[1]
+    
     """
-    Expression tokenizer.
+    Test the Expression tokenizer.
 
     * 0: Pitch;
     * 1: Performance Velocity; -> PVelocity
@@ -1203,19 +1442,19 @@ if __name__ == "__main__":
     * 3: Performance Inter Onset Interval (Onset time difference between the current note and the previous note); -> PIOI
     * 4: Perfromance Position; -> PPosition
     * 5: Perfromance Bar; -> PBar
-    * 6: Score Duration; -> SDuration
-    * 7: Score Inter Onset Interval; -> SIOI
-    * 8: Score Position; -> SPosition
-    * 9: Score Bar; -> SBar
-    * 10: Duration Deviation; -> SPDurationDev
+    * 6: Score Velocity; -> SVelocity
+    * 7: Score Duration; -> SDuration
+    * 8: Score Inter Onset Interval; -> SIOI
+    * 9: Score Position; -> SPosition
+    * 10: Score Bar; -> SBar
+    * 11: Duration Deviation; -> SPDurationDev
 
     **Notes:**
     * Tokens are first sorted by time, then track, then pitch values.
-    
     """
     
-    DATA_FOLDER = "/home/smg/v-jtbetsy/DATA/ATEPP-s2a"
-    align_path = "Ludwig_van_Beethoven/Piano_Sonata_No._7_in_D_Major,_Op._10_No._3/III._Menuetto._Allegro/05813_infer_corresp.txt"
+    DATA_FOLDER = "/home/smg/v-jtbetsy/DATA/ATEPP-s2a" #Path to the dictionary of the midi data
+    align_file_path = "Ludwig_van_Beethoven/Piano_Sonata_No._7_in_D_Major,_Op._10_No._3/III._Menuetto._Allegro/05813_infer_corresp.txt"
     performance_midi_path = "Ludwig_van_Beethoven/Piano_Sonata_No._7_in_D_Major,_Op._10_No._3/III._Menuetto._Allegro/05813.mid"
     score_midi_path = "Ludwig_van_Beethoven/Piano_Sonata_No._7_in_D_Major,_Op._10_No._3/III._Menuetto._Allegro/musicxml_cleaned.musicxml.midi"
     
@@ -1231,18 +1470,30 @@ if __name__ == "__main__":
         "use_programs": False,
         "num_tempos": 32,  # number of tempo bins
         "tempo_range": (40, 250),  # (min, max)
-        "data_type": "Alignment"
+        "data_type": "Midi",
+        "remove_outliers": True
     }
     
+    if datatype != "Midi":
+        TOKENIZER_PARAMS['data_type'] = datatype
+        
+    #initialize tokenizer   
+    config = TokenizerConfig(**TOKENIZER_PARAMS) 
+    tokenizer = ExpressionTok(config)
     
-    config = TokenizerConfig(**TOKENIZER_PARAMS)
-    
-    tokenizer = ExpressionTok(
-        config
-    )
-    
-    performance_midi = Score(os.path.join(DATA_FOLDER, performance_midi_path))
-    tokens = tokenizer.alignment_to_token(os.path.join(DATA_FOLDER, align_path), performance_midi)
-    # print(tokenizer.vocab[3])
-    print(tokens[0])
-    
+    #tokennize files (Performance & Alignment)
+    if datatype != "Midi":
+        """
+        Note that for the alignment files, there will be abnormal alignment results where I defined as outliers here. 
+        They are notes that should appear before or after the current section but wrongly align to the performance notes.add(element)
+        """
+        performance_midi = Score(os.path.join(DATA_FOLDER, performance_midi_path))
+        tokens = tokenizer.alignment_to_token(os.path.join(DATA_FOLDER, align_file_path), performance_midi)
+        print(f"Tokens for the first note: {tokens.ids[0]}")
+        tokenizer.align_tokens_to_midi(tokens, ppath="output/performance.mid", spath="output/score.mid")
+    else: # For alignments
+        tokens = tokenizer(Path("to", os.path.join(DATA_FOLDER, performance_midi_path))) #Note the return is a list of TokSequence
+        print(f"Tokens for the first note: {tokens[0].ids[0]}")
+        midi = tokenizer.tokens_to_midi(tokens)
+        midi.dump_midi("output/output.mid")
+        print(tokenizer.vocab[3])
