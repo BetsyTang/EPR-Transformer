@@ -6,12 +6,12 @@
 # @Email: tangjingjingbetsy@gmail.com
 # @Create At: 2024-04-15 17:02:52
 # @Last Modified By: Jingjing Tang
-# @Last Modified At: 2024-04-24 19:24:21
+# @Last Modified At: 2024-04-24 19:39:41
 # @Description: This is data_processing for transcribed scores.
 
-from expression_tokenizer import *
+from data.expression_tokenizer import *
 from tools import pad_sequence_with_attention
-from config import *
+from data_config import *
 
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -231,7 +231,7 @@ class ExpressionDataset():
                 else:
                     for data_type in ['performance', 'score']:
                         for idx in self.data[data_type]:
-                            save_dir = os.path.join(os.path.dir(self.save_data), data_type)
+                            save_dir = os.path.join(os.path.dirname(self.save_data), data_type)
                             if os.path.isdir(save_dir) == False:
                                 os.makedirs(save_dir)
                             np.save(os.path.join(save_dir, idx, ".npy"), self.data[data_type][idx])
@@ -286,7 +286,7 @@ class ExpressionDataset():
                                                 ('validation', validation_set), 
                                                 ('test', test_set)]):
                     for data in data_set:
-                        save_dir = os.path.join(os.path.dir(self.save_data), split)
+                        save_dir = os.path.join(os.path.dirname(self.save_data), split)
                         if os.path.isdir(save_dir) == False:
                             os.makedirs(save_dir)
                         np.save(os.path.join(save_dir, data['perf_id'], ".npy"), data)

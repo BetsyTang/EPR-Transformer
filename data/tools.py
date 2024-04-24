@@ -2,7 +2,7 @@
 # @Last Modified By: Jingjing Tang
 # @Last Modified At: 2024-04-18 17:35:45ints, num_of_features) to max_len with PAD_ID and create attention mask.
 
-from config import *
+from data_config import *
 
 TICKS_PER_BEAT = 384
 BEAT_PER_BAR = 4

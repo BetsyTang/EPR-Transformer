@@ -1,10 +1,10 @@
-from model import *
+from components.model import *
 from main import *
-from config import *
+from data_config import *
 from torch import optim
 from transformers import BertConfig
 from torch.utils.data import DataLoader, Dataset
-from expression_dataset import *
+from data.expression_dataset import *
 from pretty_midi import PrettyMIDI
 
 import os

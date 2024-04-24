@@ -1,4 +1,4 @@
-from model import *
+from components.model import *
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from torch import optim
