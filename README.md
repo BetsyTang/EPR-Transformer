@@ -2,6 +2,13 @@
 
 We updated the implementation for the paper [Reconstructing Human Expressiveness in Piano Performances with a Transformer Network](https://arxiv.org/abs/2306.06040).
 
+## Environment Installation
+Please ensure that you are using `python >= 3.8` as it requires by `midtok` library.
+
+```bash
+pip3 install -r requirements.txt
+```
+
 ## Data Preporcessing
 We provide scripts to convert a dataset of midi files or alignments (`*_infer_corresp.txt` obtained from [Nakamura's algorithm](https://midialignment.github.io/demo.html)) to note sequences. The resulted sequences are in shape `number_of_sequences_in_total x number_of_notes_per_sequence x number_of_features_used`, or simply `(segments, notes, features)`. We offer options to generate either token sequences (using the `ExpressionTokenizer` developed with the `MidiTok` library) or real value sequences, meaning we use the values directly obtained from the midi files without tokenisation.  
 
