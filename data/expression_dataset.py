@@ -6,11 +6,11 @@
 # @Email: tangjingjingbetsy@gmail.com
 # @Create At: 2024-04-15 17:02:52
 # @Last Modified By: Jingjing Tang
-# @Last Modified At: 2024-04-24 19:39:41
+# @Last Modified At: 2024-04-29 23:55:34
 # @Description: This is data_processing for transcribed scores.
 
 from data.expression_tokenizer import *
-from tools import pad_sequence_with_attention
+from tools import *
 from data_config import *
 
 from torch.utils.data import Dataset
@@ -22,18 +22,125 @@ import logging
 import datetime
 import time
 import torch
+import collections
+
+BestQuantizationMatch = collections.namedtuple('BestQuantizationMatch',
+    ['error', 'tick', 'match', 'signedError', 'divisor'])
+
+class MidiQuantizer():
+    def __init__(self, midi, quantizer: str = "group"):
+        self.tempo_changes = midi.tempos
+        if len(midi.tracks) > 1:
+            self.multi_to_mono(midi)
+        self.notes = midi.tracks[0].notes
+        self.quantizer = quantizer
+    
+    def __call__(self,
+                 quarterLengthDivisors: list = [32, 24], 
+                tempo: int = 120, 
+                global_tempo: bool = False):
+        """Return quantized note sequence: list[Note]
+        """
+        if self.quantizer == "group":
+            return self._quantize_by_group(self.notes)
+        elif self.quantizer == "grid":
+            return [self._quantize_by_grid(note, quarterLengthDivisors, tempo, global_tempo)\
+                for note in self.notes]
+        
+    def multi_to_mono(self, midi):
+        ts = Track()
+        for t in midi.tracks:
+            ts.notes.append(t.notes)
+            ts.control_changes.append(t.control_changes)
+            ts.pitch_bends.append(t.pitch_bends)
+            ts.pedals.append(t.pedals)
+        midi.tracks = list(ts)
+    
+    def _match_tempo(self, note):
+        index = np.argmin(abs(note.start-self.tempo_changes[0]))
+        return self.tempo_changes[1][index]
+
+    def _quantize_by_group(self, notes):
+        """Grouping notes that should be played at the same time and shift
+        the onset to the same time.
+        """
+        group = []
+        note_index = []
+        onset = 0
+        for i, note in enumerate(notes):
+            if group == []:
+                group.append(note.start)
+                note_index.append(i)
+                onset = note.start
+            
+            # Time threshold for grouping
+            elif note.start - onset < 0.025:
+                group.append(note.start)
+                note_index.append(i)
+                onset = note.start
+            elif note.start - onset >= 0.025:
+                try:
+                    mean_onset = int(np.round(np.mean(group)))
+                except ValueError:
+                    print(group)
+                for j in note_index:
+                    offset = mean_onset - notes[j].start
+                    notes[j].start = mean_onset
+                    notes[j].end += offset
+                group = [note.start]
+                note_index = [i]
+                onset = note.start
+        return notes
+    
+    def _quantize_by_grid(self, 
+                        note, 
+                        quarterLengthDivisors: list = [32, 24], 
+                        tempo: int = 120, 
+                        global_tempo: bool = False):
+        
+        def bestMatch(target, divisors, tempo):
+            found = []
+            for div in divisors:
+                match, error, signedErrorInner = self.nearestMultiple(target,(60/tempo)/div)
+                # Sort by unsigned error, then "tick" (divisor expressed as QL, e.g. 0.25)
+                found.append(BestQuantizationMatch(error,(60/tempo)/div, match, signedErrorInner, div))
+            # get first, and leave out the error
+            bestMatchTuple = sorted(found)[0]
+            return bestMatchTuple
+        
+        if global_tempo:
+            tempo = tempo
+        else:
+            tempo = self._match_tempo(note)
+        
+        e = note.end
+        sign = 1
+        if e < 0:
+            sign = -1                                                                                  
+            e = -1 * e
+        e_matchTuple = bestMatch(float(e), quarterLengthDivisors, tempo)
+        note.end = e_matchTuple.match * sign
+        
+        s = note.start
+        sign = 1
+        if s < 0:
+            sign = -1
+            s = -1 * s
+        s_matchTuple = bestMatch(float(s), quarterLengthDivisors, tempo)
+        note.start = s_matchTuple.match * sign          
+        return note
 
 class MidiLoader():
     def __init__(self, alignment):
         self.alignment = alignment
     
-    def __call__(self, filepath):
+    def __call__(self, filepath, feature_list):
         if self.alignment:
             note_seqs = self.load_alignments(filepath)
         else:
             note_seqs = self.load_midi(filepath)
             
-        return self.add_features(note_seqs)
+        return self.add_features(note_seqs, feature_list)
        
     def load_midi(self, midi_path):
         midi = Score(midi_path, ttype="second")
@@ -42,7 +149,7 @@ class MidiLoader():
                 inst.notes for inst in midi.tracks
                 if inst.program in range(128) and not inst.is_drum])
         midi_notes += notes
-        midi_notes.sort()
+        midi_notes = sorted(midi_notes, key=lambda x: x.start)
         return [midi_notes]
     
     def load_alignments(self, align_file):
@@ -71,36 +178,54 @@ class MidiLoader():
     
     @staticmethod
     def calcuate_ioi(notes):
+        """
+        calculate inter onset intervals
+        """
         ioi = [0 if i == 0 else notes[i].start - notes[i-1].start for i in range(len(notes))]
         return ioi
+    
+    @staticmethod
+    def calcuate_otd(notes):
+        """
+        calculate offset time durations
+        """
+        otd = [0 if i == 0 else notes[i].start - notes[i-1].end for i in range(len(notes))]
+        return otd
     
     @staticmethod
     def calcuate_durdev(perf_notes, score_notes):
         assert len(perf_notes) == len(score_notes)
         durdev = [perf_notes[i].duration - score_notes[i].duration for i in range(len(perf_notes))]
         return durdev
-    
+
     def _add_features(self, notes):
         ioi = MidiLoader.calcuate_ioi(notes)
-        features = [[note.pitch for note in notes],
-                    [note.velocity for note in notes],
-                    [note.duration for note in notes],
-                    ioi,
-                    [note.start for note in notes]
-                    ]
+        otd = MidiLoader.calcuate_otd(notes)
+        features = {"Pitch": [note.pitch for note in notes],
+                    "Velocity": [note.velocity for note in notes],
+                    "Duration": [note.duration for note in notes],
+                    "IOI": ioi,
+                    "OTD": otd,
+                    "Onset": [note.start for note in notes],
+                    "Offset": [note.end for note in notes],
+        }
         return features
     
-    def add_features(self, note_seqs):
+    def add_features(self, note_seqs, feature_list):
         if len(note_seqs) > 1:
-            features = self._add_features(note_seqs[0])
-            features += self._add_features(note_seqs[1])
-            # durdev = MidiLoader.calcuate_durdev(note_seqs[0], note_seqs[1])
-            # features += [durdev]
+            features_perf = self._add_features(note_seqs[0])
+            feature_score = self._add_features(note_seqs[1])
+            features = [features_perf[name] for name in feature_list if name != "DurDev"]
+            features += [feature_score[name] for name in feature_list if name != "DurDev"]
+            if "DurDev" in feature_list: 
+                durdev = MidiLoader.calcuate_durdev(note_seqs[0], note_seqs[1])
+                features += [durdev]
         else:
-            features = self._add_features(note_seqs[0])
+            assert "DurDev" not in feature_list
+            features = [self._add_features(note_seqs[0])[name] for name in feature_list]
         
         return np.array(features).T.tolist() 
-      
+    
 class TokenLoader():
     """
     Self-defined Tokenizer Object for easy usage base on MidTok Tokenizer
@@ -116,10 +241,9 @@ class TokenLoader():
         
         self.output_tokenizer = args.output_tokenizer
     
-    def __call__(self, filepath, midipath=None):
+    def __call__(self, filepath):
         if self.alignment:
-            midi = Score(midipath)
-            tokens = self.tokenizer.alignment_to_token(filepath, midi)
+            tokens = self.tokenizer.alignment_to_token(filepath)
         else:
             tokens = self.tokenizer(Path("to", filepath))[0] # The default midi_to_tokens return a list[TokSequence]
         return tokens.ids
@@ -148,6 +272,7 @@ class ExpressionDataset():
         print("Initialzing....")
         self.df = pd.read_csv(args.csv_file)
         self.data_folders = args.data_folders
+        self.feature_list = args.feature_list
         
         if args.mode == "token":
             self.loader = TokenLoader(args)
@@ -186,7 +311,7 @@ class ExpressionDataset():
         for idx in tqdm(idxs):
             meta = self.load_metadata(idx)
             if self.alignment:
-                sequence = self.loader(meta['align_file'], meta['perf_midi']) if self.mode == 'token' else self.loader(meta['align_file'])
+                sequence = self.loader(meta['align_file']) if self.mode == 'token' else self.loader(meta['align_file'], self.feature_list)
                 seqs, masks = self.create_subsequences(sequence) 
                 perf_seqs = []
                 score_seqs = []
@@ -205,7 +330,7 @@ class ExpressionDataset():
                 self.save_subsequences(meta, perf_seqs, masks, "performance")
                 self.save_subsequences(meta, score_seqs, masks, "score")
             else:
-                perf = self.loader(meta['perf_midi'])
+                perf = self.loader(meta['perf_midi'], self.feature_list)
                 seqs, masks = self.create_subsequences(perf)         
                 self.save_subsequences(meta, seqs, masks, "performance")
                 if self.score:
@@ -234,7 +359,7 @@ class ExpressionDataset():
                             save_dir = os.path.join(os.path.dirname(self.save_data), data_type)
                             if os.path.isdir(save_dir) == False:
                                 os.makedirs(save_dir)
-                            np.save(os.path.join(save_dir, idx, ".npy"), self.data[data_type][idx])
+                            np.save(os.path.join(save_dir, idx + ".npy"), self.data[data_type][idx])
             
         if self.mode == "token":
             self.loader.save()
@@ -289,7 +414,7 @@ class ExpressionDataset():
                         save_dir = os.path.join(os.path.dirname(self.save_data), split)
                         if os.path.isdir(save_dir) == False:
                             os.makedirs(save_dir)
-                        np.save(os.path.join(save_dir, data['perf_id'], ".npy"), data)
+                        np.save(os.path.join(save_dir, data['perf_id'] + ".npy"), data)
         else:
             self.data['train_set'] = train_set
             self.data['validation_set'] = validation_set
@@ -351,16 +476,15 @@ class ExpressionDataset():
         return meta
 
 class DealDataset(Dataset):
-    def __init__(self, x_data, mask_data, y_data, style, idx, alignment=True):
+    def __init__(self, x_data, mask_data, y_data, style, idx):
         self.x_data = torch.FloatTensor(x_data)
         self.mask_data = torch.FloatTensor(mask_data)
         self.y_data = torch.FloatTensor(y_data)
         self.style = torch.LongTensor(style)
         self.idx = idx
         self.len = self.x_data.shape[0]
-        self.alignment = alignment
         
-        # x_features = ["Pitch", "Velocity", "Duration", "IOI", "Position", "Bar"]
+        # what features to be used as prediction target
         y_features = ["Velocity", "IOI", "Duration"]
         self.y_data = self.y_data[:, :, self.get_feature_index(y_features)] 
     
@@ -394,10 +518,11 @@ def set_logger(logger_name, logeer_file):
 def get_args():
     parser = argparse.ArgumentParser(description='A simple program to demonstrate argparse')
     parser.add_argument('-c', '--csv_file', default=None, help='Path to the CSV file containing metadata. Defaults to "CSV_FILE".')
-    parser.add_argument('-o', '--output_data', type=str, default='data/data.npz', help='Path where the processed data will be stored. Defaults to "data/data.npz".')
-    parser.add_argument('-t', '--output_tokenizer', type=str, default='data/tokenizer.json', help='Path where the tokenizer configuration will be saved. Defaults to "data/tokenizer.json".')
+    parser.add_argument('-o', '--output_data', type=str, default='data/data_files/data.npz', help='Path where the processed data will be stored. Defaults to "data/data_files/data.npz".')
+    parser.add_argument('-t', '--output_tokenizer', type=str, default='data/data_files/tokenizer.json', help='Path where the tokenizer configuration will be saved. Defaults to "data/tokenizer.json".')
     parser.add_argument('-l', '--load_tokenizer', default=None, help='Optional path to a previously saved tokenizer to be loaded.')
     parser.add_argument('-g', '--tokenizer_config', type=dict, default=TOKENIZER_PARAMS, help='Tokenizer configuration as a dictionary. Defaults to "TOKENIZER_PARAMS".')
+    parser.add_argument('-f', '--feature_list', type=list, default=FEATURE_NAMES, help='Features to be used for midi. Defaults to "FEATURE NAMES".')
     parser.add_argument('-d', '--data_folders', nargs="+", help='List of paths to data folders. Multiple folders can be specified. Defaults to "PATH_TO_DATA".')
     parser.add_argument('-A', '--alignment', action='store_true', help='Enable use of alignment data. Disabled by default.')
     parser.add_argument('-S', '--score', action='store_true', help='Enable the use of musical score data. Disabled by default.')
@@ -422,6 +547,7 @@ def print_arg_values(args):
     print(f"Output Tokenizer Path: {args.output_tokenizer}")
     print(f"Load Tokenizer Path: {args.load_tokenizer}")
     print(f"Tokenizer Configuration: {args.tokenizer_config}")
+    print(f"Feature List: {args.feature_list}")
     print(f"Data Folders: {args.data_folders}")
     print(f"Alignment Enabled: {args.alignment}")
     print(f"Score Data Enabled: {args.score}")

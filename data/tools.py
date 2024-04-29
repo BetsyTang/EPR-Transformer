@@ -1,10 +1,12 @@
 # @Script: data_preprocessing.py
 # @Last Modified By: Jingjing Tang
 # @Last Modified At: 2024-04-18 17:35:45ints, num_of_features) to max_len with PAD_ID and create attention mask.
-
+# @Script: expression_dataset.py
 from data_config import *
-
-TICKS_PER_BEAT = 384
+from decimal import Decimal
+import math
+# @Last Modified By: Jingjing Tang
+# @Last Modified At: 2024-04-29 23:03:14
 BEAT_PER_BAR = 4
 PITCH_TOKEN = 0
 VEL_TOKEN = 1
@@ -161,3 +163,23 @@ def find_matching_token(ref_token, target_tokens, start, end, last_target_token,
             if last_target_token is None or is_within_time_bounds(target_token[BAR_TOKEN], last_target_token[BAR_TOKEN], TICKS_PER_BEAT):
                 return target_token
     return None
+
+def nearest_multiple(n, unit):
+    if n < 0:
+        raise ValueError(f'Cannot find nearest multiple for {n} which is less than zero.')
+
+    n = Decimal(n)
+    unit = Decimal(unit)
+    mult = Decimal(math.floor(n / unit))
+
+    match_low = unit * mult
+    match_high = unit * (mult + 1)
+
+    # No need to check if n is between match_low and match_high since it is mathematically given
+    half_unit = unit / 2
+    if n <= match_low + half_unit:
+        diff = n - match_low
+        return float(match_low), float(diff), float(diff)
+    else:
+        diff = match_high - n
+        return float(match_high), float(diff), float(diff)

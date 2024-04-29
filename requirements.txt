@@ -4,11 +4,11 @@ torchvision>=0.15.0
 lightning==2.2.2
 torchmetrics>=0.11.4
 # --------- loggers --------- #
-wandb
+wandb==0.16.5
 
 # ---------- others --------- #
-miditok
-pandas
-numpy
-transformers
-numba
+miditok==3.0.2
+pandas==2.2.2
+numpy==1.26.4
+transformers==4.40.0
+numba==0.59.1
