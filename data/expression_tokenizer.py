@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from data_config import *
 from symusic import Note, Score, Tempo, TimeSignature, Track
 from miditok.classes import Event, TokSequence
 from miditok.constants import MIDI_INSTRUMENTS, TIME_SIGNATURE, TEMPO
@@ -9,7 +8,6 @@ from miditok.utils import (
     compute_ticks_per_bar, 
     compute_ticks_per_beat, 
     get_bars_ticks, 
-    get_midi_ticks_per_beat, 
     detect_chords)
 from miditok import TokenizerConfig
 from pathlib import Path
@@ -17,6 +15,8 @@ import pandas as pd
 import numpy as np
 import os
 import sys
+
+TICKS_PER_BEAT = 96
 
 class ExpressionTok(MIDITokenizer):
     r"""
@@ -519,13 +519,17 @@ class ExpressionTok(MIDITokenizer):
         time_columns = ['alignOntime', 'alignOfftime', 'refOntime', 'refOfftime']
         ticks_matrix = np.array([self.seconds_to_ticks(alignment[col].to_numpy(), TICKS_PER_BEAT) for col in time_columns]).T
         max_duration_ticks = max(self._tpb_ticks_to_tokens.keys())
-
         # Generate events using the calculated tick data
         n = 0 
         for i, row in alignment.iterrows():
             Ponset, Poffset, Sonset, Soffset = ticks_matrix[n, 0], ticks_matrix[n, 1], ticks_matrix[n, 2], ticks_matrix[n, 3]
             Pduration_ticks = min(Poffset - Ponset, max_duration_ticks)
             Sduration_ticks = min(Soffset - Sonset, max_duration_ticks)
+            
+            #NOTE Remove notes with zero length
+            if (Pduration_ticks == 0) or (Sduration_ticks == 0):
+                continue
+            
             n += 1
             # Map durations to tokens
             Pduration_token = self._tpb_ticks_to_tokens[TICKS_PER_BEAT][Pduration_ticks]
@@ -1059,7 +1063,9 @@ class ExpressionTok(MIDITokenizer):
         :return: the vocabulary as a list of string.
         """
         if self.config.additional_params["data_type"] == "Alignment":
-            N = 12
+            N = 11
+            if self.config.additional_params["durdev"]:
+                N = 12
         else:
             N = 6
             
@@ -1373,6 +1379,23 @@ if __name__ == "__main__":
     performance_midi_path = "Ludwig_van_Beethoven/Piano_Sonata_No._7_in_D_Major,_Op._10_No._3/III._Menuetto._Allegro/05813.mid"
     score_midi_path = "Ludwig_van_Beethoven/Piano_Sonata_No._7_in_D_Major,_Op._10_No._3/III._Menuetto._Allegro/musicxml_cleaned.musicxml.midi"
     
+    TOKENIZER_PARAMS = {
+        "pitch_range": (21, 109),
+        "beat_res": {(0, 12):TICKS_PER_BEAT},
+        "num_velocities": 64,
+        "special_tokens": ["PAD", "BOS", "EOS", "MASK"],
+        "use_chords": False,
+        "use_rests": False,
+        "use_tempos": False,
+        "use_time_signatures": False,
+        "use_programs": False,
+        "num_tempos": 32,  # number of tempo bins
+        "tempo_range": (40, 250),  # (min, max)
+        "data_type": "Midi",
+        "remove_outliers": True,
+        "durdev": False
+    }
+    
     if datatype != "Midi":
         TOKENIZER_PARAMS['data_type'] = datatype
         
@@ -1389,9 +1412,11 @@ if __name__ == "__main__":
         tokens = tokenizer.alignment_to_token(os.path.join(DATA_FOLDER, align_file_path))
         print(f"Tokens for the first note: {tokens.ids[0]}")
         tokenizer.align_tokens_to_midi(tokens, ppath="data/performance.mid", spath="data/score.mid")
+        for i in tokenizer.vocab:
+            print(list(i.keys())[4].split("_")[0], len(i))
     else: # For alignments
         tokens = tokenizer(Path("to", os.path.join(DATA_FOLDER, performance_midi_path))) #Note the return is a list of TokSequence
         print(f"Tokens for the first note: {tokens[0].ids[0]}")
         midi = tokenizer.tokens_to_midi(tokens)
-        midi.dump_midi("output/output.mid")
-        print(tokenizer.vocab[3])
+        # midi.dump_midi("output/output.mid")
+        # print(tokenizer.vocab[3])
