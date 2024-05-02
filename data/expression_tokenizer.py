@@ -107,7 +107,7 @@ class ExpressionTok(MIDITokenizer):
         )
         ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
         ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
-        pos_per_bar = max(self.config.beat_res.values())
+        pos_per_bar = ticks_per_beat // ticks_per_pos
         for e, event in enumerate(events):
             # Set current bar and position
             # This is done first, as we need to compute these values with the current
@@ -455,7 +455,6 @@ class ExpressionTok(MIDITokenizer):
                 dur = self._tpb_ticks_to_tokens[ticks_per_beat[tpb_idx, 1]][
                     note.duration
                 ]
-                print(note.duration)
                 events.append(
                     Event(
                         type_="Duration",
@@ -589,7 +588,7 @@ class ExpressionTok(MIDITokenizer):
         ticks_per_bar = TICKS_PER_BEAT * max([ts[0] for ts in self.time_signatures])
         ticks_per_beat = TICKS_PER_BEAT
         ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
-        pos_per_bar = max(self.config.beat_res.values())
+        pos_per_bar = ticks_per_bar // ticks_per_pos
 
         for e, event in enumerate(events):
             # Set current bar and position
@@ -631,7 +630,7 @@ class ExpressionTok(MIDITokenizer):
                 ticks_per_bar = TICKS_PER_BEAT * current_time_sig[0]
                 ticks_per_beat = TICKS_PER_BEAT
                 ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
-                pos_per_bar = max(self.config.beat_res.values())
+                pos_per_bar = ticks_per_bar // ticks_per_pos
             elif event.type_ in {"Pitch"} and e + 5 < len(events):
                 pitch_token_name = "Pitch"
                 # "Pitch", "PVelocity", "PDuration", "PIOI", "PPosition", "PBar", 
@@ -701,7 +700,7 @@ class ExpressionTok(MIDITokenizer):
         :return: the midi object (:class:`symusic.Score`).
         """
         # Unsqueeze tokens in case of one_token_stream
-        tokens = [tokens]
+        # tokens = [tokens]
         for i in range(len(tokens)):
             tokens[i] = tokens[i].tokens
             
@@ -739,12 +738,12 @@ class ExpressionTok(MIDITokenizer):
             ticks_per_bar = TICKS_PER_BEAT * max([ts[0] for ts in self.time_signatures])
             ticks_per_beat = TICKS_PER_BEAT
             ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
-            pos_per_bar = max(self.config.beat_res.values())
+            pos_per_bar = ticks_per_bar // ticks_per_pos
             
             t = 0
             # Decode tokens
             for time_step in seq:
-                num_tok_to_check = 12
+                num_tok_to_check = 11
                 if any(
                     tok.split("_")[1] == "None" for tok in time_step[:num_tok_to_check]
                 ):
@@ -765,6 +764,12 @@ class ExpressionTok(MIDITokenizer):
                         Ppos += int(time_step[3].split("_")[1])
                         Pevent_bar = Ppos // pos_per_bar
                         Pevent_pos = Ppos % pos_per_bar
+                    
+                    Pcurrent_tick = (
+                        tick_at_last_ts_change
+                        + (Pevent_bar - bar_at_last_ts_change) * ticks_per_bar
+                        + Pevent_pos * ticks_per_pos
+                    )
 
                 else:
                     # Time values
@@ -814,6 +819,8 @@ class ExpressionTok(MIDITokenizer):
                 check_inst(current_program, Stracks)
                 Ptracks[current_program].notes.append(new_Pnote)
                 Stracks[current_program].notes.append(new_Snote)
+                
+                t += 1
 
         # create MidiFile
         Pmidi.tracks = list(Ptracks.values())

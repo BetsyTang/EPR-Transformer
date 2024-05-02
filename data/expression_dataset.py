@@ -6,7 +6,7 @@
 # @Email: tangjingjingbetsy@gmail.com
 # @Create At: 2024-04-15 17:02:52
 # @Last Modified By: Jingjing Tang
-# @Last Modified At: 2024-04-29 23:55:34
+# @Last Modified At: 2024-05-01 21:00:17
 # @Description: This is data_processing for transcribed scores.
 
 from data.expression_tokenizer import *
@@ -407,7 +407,7 @@ class ExpressionDataset():
                     test = test_set
                 )
             else:
-                for split, data_set in enumerate([('train', train_set), 
+                for _, (split, data_set) in enumerate([('train', train_set), 
                                                 ('validation', validation_set), 
                                                 ('test', test_set)]):
                     for data in data_set:
