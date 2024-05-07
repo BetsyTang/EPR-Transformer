@@ -143,14 +143,24 @@ class ExpressionTok(MIDITokenizer):
                 )
                 IOI = current_bar * pos_per_bar + current_pos - prev_bar * pos_per_bar - prev_pos if prev_bar != -1 else 0
                 
-                new_event = [
+                if self.config.additional_params["data_type"] == "Alignment":
+                    new_event = [
                     Event(type_=pitch_token_name, value=event.value, time=event.time),
-                    Event(type_="Velocity", value=events[e + 1].value, time=event.time),
-                    Event(type_="Duration", value=events[e + 2].value, time=event.time),
-                    Event(type_="IOI", value=IOI, time=event.time ),
-                    Event(type_="Position", value=current_pos, time=event.time),
-                    Event(type_="Bar", value=current_bar, time=event.time),
+                    Event(type_="PVelocity", value=events[e + 1].value, time=event.time),
+                    Event(type_="PDuration", value=events[e + 2].value, time=event.time),
+                    Event(type_="PIOI", value=IOI, time=event.time ),
+                    Event(type_="PPosition", value=current_pos, time=event.time),
+                    Event(type_="PBar", value=current_bar, time=event.time),
                 ]
+                else:
+                    new_event = [
+                        Event(type_=pitch_token_name, value=event.value, time=event.time),
+                        Event(type_="Velocity", value=events[e + 1].value, time=event.time),
+                        Event(type_="Duration", value=events[e + 2].value, time=event.time),
+                        Event(type_="IOI", value=IOI, time=event.time ),
+                        Event(type_="Position", value=current_pos, time=event.time),
+                        Event(type_="Bar", value=current_bar, time=event.time),
+                    ]
                
                 if self.config.use_programs:
                     new_event.append(Event("Program", current_program))
@@ -165,6 +175,9 @@ class ExpressionTok(MIDITokenizer):
                     )
                 all_events.append(new_event)
 
+                prev_bar = current_bar
+                prev_pos = current_pos
+                
         return all_events
 
     def _midi_to_tokens(self, midi: Score) -> TokSequence | list[TokSequence]:
