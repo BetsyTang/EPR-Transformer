@@ -715,7 +715,8 @@ class ExpressionTok(MIDITokenizer):
         :return: the midi object (:class:`symusic.Score`).
         """
         # Unsqueeze tokens in case of one_token_stream
-        tokens = [tokens]
+        if len(tokens) != 1:
+            tokens = [tokens]
         for i in range(len(tokens)):
             tokens[i] = tokens[i].tokens
             
