@@ -100,3 +100,18 @@ python data/expression_dataset.py -o data.npz -t tokenizer.json -d ['data/perfor
 Jingjing Tang: jingjing.tang@qmul.ac.uk
 
 
+
+
+tokens -> performance & score [[52, 23, 99, 388, 54, 4, 34, 99, 388, 4, 4], ...]
+
+performance -> [[52, 23, 99, 388, 54, 4,], ...., [0,0,0,0,0,0], ...] 100 notes -> 256 notes
+mask -> [1, 1, 1, ....1, 0, 0, .....0]
+score -> [[52, 34, 99, 388, 4, 4], ....]
+
+self.data['performance'] -> all performance segments
+self.data['performance']['1_angry_21_0'] -> a specific performance segment ['split']
+self.data['score'] -> all score segments
+
+----- Split -----
+
+

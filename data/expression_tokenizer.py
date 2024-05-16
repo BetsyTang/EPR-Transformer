@@ -107,7 +107,7 @@ class ExpressionTok(MIDITokenizer):
         )
         ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
         ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
-        pos_per_bar = ticks_per_beat // ticks_per_pos
+        pos_per_bar = ticks_per_bar // ticks_per_pos
         for e, event in enumerate(events):
             # Set current bar and position
             # This is done first, as we need to compute these values with the current
@@ -142,6 +142,8 @@ class ExpressionTok(MIDITokenizer):
                     "PitchDrum" if event.type_ == "PitchDrum" else "Pitch"
                 )
                 IOI = current_bar * pos_per_bar + current_pos - prev_bar * pos_per_bar - prev_pos if prev_bar != -1 else 0
+                if np.abs(IOI) >= self.num_positions:
+                    IOI = self.num_positions - 1 if IOI > 0 else -self.num_positions + 1
                 
                 if self.config.additional_params["data_type"] == "Alignment":
                     new_event = [
@@ -173,11 +175,12 @@ class ExpressionTok(MIDITokenizer):
                             value=f"{current_time_sig[0]}/{current_time_sig[1]}",
                         )
                     )
+                
                 all_events.append(new_event)
-
+                
                 prev_bar = current_bar
                 prev_pos = current_pos
-                
+
         return all_events
 
     def _midi_to_tokens(self, midi: Score) -> TokSequence | list[TokSequence]:
@@ -530,7 +533,7 @@ class ExpressionTok(MIDITokenizer):
         # Calculate ticks from seconds for all necessary time columns
         time_columns = ['alignOntime', 'alignOfftime', 'refOntime', 'refOfftime']
         ticks_matrix = np.array([self.seconds_to_ticks(alignment[col].to_numpy(), TICKS_PER_BEAT) for col in time_columns]).T
-        max_duration_ticks = max(self._tpb_ticks_to_tokens.keys())
+        max_duration_ticks = max(self._tpb_ticks_to_tokens[TICKS_PER_BEAT].keys())
         # Generate events using the calculated tick data
         n = 0 
         for i, row in alignment.iterrows():
@@ -546,14 +549,13 @@ class ExpressionTok(MIDITokenizer):
             # Map durations to tokens
             Pduration_token = self._tpb_ticks_to_tokens[TICKS_PER_BEAT][Pduration_ticks]
             Sduration_token = self._tpb_ticks_to_tokens[TICKS_PER_BEAT][Sduration_ticks]
-            
             #SVel
             Svel = self.np_get_closest(self.velocities, [60])[0]
             
             # Create events
             events.extend([
+                Event(type_="SOnset", value=Sonset, time=Ponset, desc=Soffset), # this has to be the first in order to update the bar and pos for scores correctly
                 Event(type_="Pitch", value=row['alignPitch'], time=Ponset, desc=Poffset),
-                Event(type_="SOnset", value=Sonset, time=Ponset, desc=Poffset),
                 Event(type_="PVelocity", value=row['alignOnvel'], time=Ponset, desc=str(row['alignOnvel'])),
                 Event(type_="PDuration", value=Pduration_token, time=Ponset, desc=f"{Pduration_token} ticks"),
                 Event(type_="SVelocity", value=Svel, time=Ponset, desc=str(Svel)),
@@ -666,21 +668,21 @@ class ExpressionTok(MIDITokenizer):
                 
                 new_event = [
                     Event(type_=pitch_token_name, value=event.value, time=event.time),
-                    Event(type_="PVelocity", value=events[e + 2].value, time=event.time),
-                    Event(type_="PDuration", value=events[e + 3].value, time=event.time),
+                    Event(type_="PVelocity", value=events[e + 1].value, time=event.time),
+                    Event(type_="PDuration", value=events[e + 2].value, time=event.time),
                     Event(type_="PIOI", value=PIOI, time=event.time),
                     Event(type_="PPosition", value=Pcurrent_pos, time=event.time),
                     Event(type_="PBar", value=Pcurrent_bar, time=event.time),
-                    Event(type_="SVelocity", value=events[e + 4].value, time=event.time),
-                    Event(type_="SDuration", value=events[e + 5].value, time=event.time),
+                    Event(type_="SVelocity", value=events[e + 3].value, time=event.time),
+                    Event(type_="SDuration", value=events[e + 4].value, time=event.time),
                     Event(type_="SIOI", value=SIOI, time=event.time),
                     Event(type_="SPosition", value=Scurrent_pos, time=event.time),
                     Event(type_="SBar", value=Scurrent_bar, time=event.time),
                 ]
                 
                 if self.config.additional_params["durdev"]:
-                    Pdur = int(events[e + 3].value.split(".")[0]) * int(events[e + 3].value.split(".")[2]) + int(events[e + 3].value.split(".")[1])
-                    Sdur = int(events[e + 5].value.split(".")[0]) * int(events[e + 5].value.split(".")[2]) + int(events[e + 5].value.split(".")[1])
+                    Pdur = int(events[e + 2].value.split(".")[0]) * int(events[e + 2].value.split(".")[2]) + int(events[e + 2].value.split(".")[1])
+                    Sdur = int(events[e + 4].value.split(".")[0]) * int(events[e + 4].value.split(".")[2]) + int(events[e + 4].value.split(".")[1])
                     SPDurDev = Pdur - Sdur
                     #NOTE Need more smart way to deal with such kind of issues
                     if np.abs(SPDurDev) >= 2 * self.num_positions:
@@ -713,7 +715,7 @@ class ExpressionTok(MIDITokenizer):
         :return: the midi object (:class:`symusic.Score`).
         """
         # Unsqueeze tokens in case of one_token_stream
-        # tokens = [tokens]
+        tokens = [tokens]
         for i in range(len(tokens)):
             tokens[i] = tokens[i].tokens
             
@@ -835,14 +837,28 @@ class ExpressionTok(MIDITokenizer):
                 
                 t += 1
 
+        
         # create MidiFile
+        del tempo_changes[0]
+        
+        if len(tempo_changes) == 0 or (
+            tempo_changes[0].time != 0
+            and round(tempo_changes[0].tempo, 2) != self.default_tempo
+        ):
+            tempo_changes.insert(0, Tempo(0, self.default_tempo))
+        elif round(tempo_changes[0].tempo, 2) == self.default_tempo:
+            tempo_changes[0].time = 0
+
+        if len(time_signature_changes) == 0 or time_signature_changes[0].time != 0:
+            time_signature_changes.insert(0, TimeSignature(0, *TIME_SIGNATURE))
+            
         Pmidi.tracks = list(Ptracks.values())
         Pmidi.tempos = tempo_changes
         Pmidi.time_signatures = time_signature_changes
         
         Smidi.tracks = list(Stracks.values())
         Smidi.tempos = tempo_changes
-        Smidi.time_signatures = time_signature_changes
+        Smidi.time_signatures = time_signature_changes           
 
         return [Pmidi, Smidi]
 
@@ -878,12 +894,6 @@ class ExpressionTok(MIDITokenizer):
        
         Pmidi, Smidi = self._align_tokens_to_midi(tokens, from_predictions=from_predictions)
         
-        for midi in [Pmidi, Smidi]:
-            if len(midi.tempos) == 0 or midi.tempos[0].time != 0:
-                midi.tempos.insert(0, Tempo(0, self.default_tempo))
-            if len(midi.time_signatures) == 0 or midi.time_signatures[0].time != 0:
-                midi.time_signatures.insert(0, TimeSignature(0, *TIME_SIGNATURE))
-
         # Write MIDI file
         
         Pmidi.dump_midi(ppath)
@@ -1330,7 +1340,7 @@ class ExpressionTok(MIDITokenizer):
         headers = ['alignID', 'alignOntime', 'alignOfftime', 'alignSitch', 'alignPitch', 'alignOnvel', 
                    'refID', 'refOntime', 'refOfftime', 'refSitch', 'refPitch', 'refOnvel']
         # Load data
-        align_df = pd.read_csv(alignment_file, sep='\s+', names=headers, skiprows=1)
+        align_df = pd.read_csv(alignment_file, sep=r'\s+', names=headers, skiprows=1)
         # Label data
         align_df['label'] = 'match'
         align_df.loc[align_df['refID'] == "*", 'label'] = "insertion"
@@ -1368,7 +1378,6 @@ class ExpressionTok(MIDITokenizer):
         idxs[prev_idx_is_less] -= 1
 
         return array[idxs]
-
 if __name__ == "__main__":
     
     datatype = sys.argv[1]

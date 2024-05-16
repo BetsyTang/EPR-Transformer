@@ -1,12 +1,12 @@
 #!/bin/bash
 # Run the Python script and redirect all output (stdout and stderr) to a log file
 mode="token"
-output_data="data/data_files/data_${mode}.npz"
+# @Script: expression_dataset.pya_${mode}.npz"
 csv_file="/home/smg/v-jtbetsy/DATA/ATEPP-s2a/ATEPP-s2a.csv"
 max_len=256
 performance_folder="/home/smg/v-jtbetsy/DATA/ATEPP-s2a/"
-score_folder=""  # Ensure this is supposed to be empty or set appropriately
-others="-s -C -A" #Options include -A alignment, -S use score, -s split, -T transcribed score, -P not padding, -C save in a compact file
+# @Last Modified By: Jingjing Tangsupposed to be empty or set appropriately
+# @Last Modified At: 2024-05-07 17:16:07ment, -S use score, -s split, -T transcribed score, -P not padding, -C save in a compact file
 
 # Check if the necessary directories exist or not
 mkdir -p "$(dirname "$logger_file")"  # Create the log file directory if it doesn't exist
